@@ -140,7 +140,7 @@ define(function (require, exports, module) {
 
         return deferred.promise();
     }
-    
+
     /**
      * Loads the extension that lives at baseUrl into its own Require.js context
      *
@@ -152,39 +152,58 @@ define(function (require, exports, module) {
      *              (Note: if extension contains a JS syntax error, promise is resolved not rejected).
      */
     function loadExtension(name, config, entryPoint) {
-        var extensionConfig = {
-            context: name,
-            baseUrl: config.baseUrl,
-            /* FIXME (issue #1087): can we pass this from the global require context instead of hardcoding twice? */
-            paths: globalConfig,
-            locale: brackets.getLocale()
-        };
-        
+        var promise,
+            extensionConfig = {
+                context: name,
+                baseUrl: config.baseUrl,
+                /* FIXME (issue #1087): can we pass this from the global require context instead of hardcoding twice? */
+                paths: globalConfig,
+                locale: brackets.getLocale()
+            };
+
         // Read optional requirejs-config.json
+        promise = _loadOptionalExtensions(extensionConfig, config, entryPoint);
+
+        return promise.promise();
+    }
+
+    /**
+     * Loads the extension that lives at baseUrl into its own Require.js context
+     *
+     * @param {!{context: name, baseUrl: config.baseUrl, paths: globalConfig, locale: brackets.getLocale()}} extensionConfig,
+     *              used to extend it with a optional requirejs-config.json
+     * @param {!{baseUrl: string}} config object with baseUrl property containing absolute path of extension
+     * @param {!string} entryPoint, name of the main js file to load
+     * @return {!$.Promise} A promise object that is resolved when the extension is loaded, or rejected
+     *              if the extension fails to load or throws an exception immediately when loaded.
+     *              (Note: if extension contains a JS syntax error, promise is resolved not rejected).
+     */
+    function _loadOptionalExtensions(extensionConfig, config, entryPoint) {
+
         var promise = _mergeConfig(extensionConfig).then(function (mergedConfig) {
             // Create new RequireJS context and load extension entry point
             var extensionRequire = brackets.libRequire.config(mergedConfig),
                 extensionRequireDeferred = new $.Deferred();
 
-            contexts[name] = extensionRequire;
+            contexts[mergedConfig.context] = extensionRequire;
             extensionRequire([entryPoint], extensionRequireDeferred.resolve, extensionRequireDeferred.reject);
-            
-            return extensionRequireDeferred.promise();
+
+            return extensionRequireDeferred;
         }).then(function (module) {
             // Extension loaded normally
             var initPromise;
 
-            _extensions[name] = module;
+            _extensions[extensionConfig.name] = module;
 
             // Optional sync/async initExtension
             if (module && module.initExtension && (typeof module.initExtension === "function")) {
-                // optional async extension init 
+                // optional async extension init
                 try {
                     initPromise = Async.withTimeout(module.initExtension(), _getInitExtensionTimeout());
                 } catch (err) {
                     // Synchronous error while initializing extension
-                    console.error("[Extension] Error -- error thrown during initExtension for " + name + ": " + err);
-                    return new $.Deferred().reject(err).promise();
+                    console.error("[Extension] Error -- error thrown during initExtension for " + extensionConfig.context + ": " + err);
+                    return new $.Deferred().reject(err);
                 }
 
                 // initExtension may be synchronous and may not return a promise
@@ -195,9 +214,9 @@ define(function (require, exports, module) {
                     // so the call is safe as-is.
                     initPromise.fail(function (err) {
                         if (err === Async.ERROR_TIMEOUT) {
-                            console.error("[Extension] Error -- timeout during initExtension for " + name);
+                            console.error("[Extension] Error -- timeout during initExtension for " + extensionConfig.context);
                         } else {
-                            console.error("[Extension] Error -- failed initExtension for " + name + (err ? ": " + err : ""));
+                            console.error("[Extension] Error -- failed initExtension for " + extensionConfig.context + (err ? ": " + err : ""));
                         }
                     });
 
@@ -216,7 +235,6 @@ define(function (require, exports, module) {
         }, function (err) {
             $(exports).triggerHandler("loadFailed", config.baseUrl);
         });
-        
         return promise;
     }
 
@@ -231,25 +249,28 @@ define(function (require, exports, module) {
     function testExtension(name, config, entryPoint) {
         var result = new $.Deferred(),
             extensionPath = config.baseUrl + "/" + entryPoint + ".js";
-        
+
         FileSystem.resolve(extensionPath, function (err, entry) {
             if (!err && entry.isFile) {
                 // unit test file exists
-                var extensionRequire = brackets.libRequire.config({
+
+                var extensionConfig = {
                     context: name,
                     baseUrl: config.baseUrl,
                     paths: $.extend({}, config.paths, globalConfig)
-                });
-    
-                extensionRequire([entryPoint], function () {
-                    result.resolve();
-                });
+                };
+
+                _loadOptionalExtensions(extensionConfig, config, entryPoint)
+                    .done(function() {
+                        result.resolve();
+                    }).fail(function() {
+                        result.reject();
+                    });
             } else {
                 result.reject();
             }
         });
-        
-        return result.promise();
+        return result.promise();;
     }
     
     /**
